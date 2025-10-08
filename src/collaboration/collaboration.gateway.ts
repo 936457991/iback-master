@@ -787,4 +787,78 @@ export class CollaborationGateway implements OnGatewayConnection, OnGatewayDisco
       client.emit('error', { message: 'Failed to sync room state' });
     }
   }
+
+  // 🔧 处理同步前的保存请求（非管理员请求管理员保存）
+  @SubscribeMessage('request-creator-save')
+  async handleRequestCreatorSave(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    try {
+      const { roomId } = data;
+
+      if (!client.user) {
+        console.error('💾 ❌ User not authenticated');
+        client.emit('error', { message: 'User not authenticated' });
+        return;
+      }
+
+      console.log('💾 ========== SAVE REQUEST RECEIVED ==========');
+      console.log('💾 From user:', client.user.username, '(', client.user.id, ')');
+      console.log('💾 For room:', roomId);
+      console.log('💾 Socket ID:', client.id);
+
+      // 获取房间中的所有Socket
+      const roomSockets = this.server.sockets.adapter.rooms.get(roomId);
+      console.log('💾 Room has', roomSockets ? roomSockets.size : 0, 'sockets');
+      if (roomSockets) {
+        console.log('💾 Socket IDs in room:', Array.from(roomSockets));
+      }
+
+      // 广播保存请求给房间中的所有用户（主要是房间创建人）
+      this.server.to(roomId).emit('request-creator-save', {
+        roomId,
+        requestedBy: client.user.id,
+        requestedByUsername: client.user.username,
+      });
+
+      console.log('💾 ✅ Save request broadcasted to room:', roomId);
+      console.log('💾 ========================================');
+
+    } catch (error) {
+      console.error('💾 ❌ Error handling save request:', error);
+      client.emit('error', { message: 'Failed to request save' });
+    }
+  }
+
+  // 🔧 处理保存确认（管理员确认已保存）
+  @SubscribeMessage('content-saved-confirmation')
+  async handleContentSavedConfirmation(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    try {
+      const { roomId } = data;
+
+      if (!client.user) {
+        client.emit('error', { message: 'User not authenticated' });
+        return;
+      }
+
+      console.log('✅ Save confirmation received from:', client.user.username, 'for room:', roomId);
+
+      // 广播保存确认给房间中的所有用户
+      this.server.to(roomId).emit('content-saved-confirmation', {
+        roomId,
+        savedBy: client.user.id,
+        savedByUsername: client.user.username,
+      });
+
+      console.log('✅ Save confirmation broadcasted to room:', roomId);
+
+    } catch (error) {
+      console.error('Error handling save confirmation:', error);
+      client.emit('error', { message: 'Failed to confirm save' });
+    }
+  }
 }
