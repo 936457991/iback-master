@@ -539,8 +539,11 @@ export class RoomsService {
       }
     }
 
-    Object.assign(room, updateRoomDto);
-    await this.roomsRepository.save(room);
+    // 使用重试机制处理可能的死锁
+    await this.retryOnDeadlock(async () => {
+      Object.assign(room, updateRoomDto);
+      await this.roomsRepository.save(room);
+    }, 3);
 
     return this.findOne(id);
   }
@@ -825,7 +828,56 @@ export class RoomsService {
       throw new BadRequestException(`内容过大，最大支持 ${Math.floor(maxContentSize / 1024 / 1024)}MB`);
     }
     
-    await this.roomsRepository.update(roomId, { content });
+    // 使用重试机制处理可能的死锁
+    await this.retryOnDeadlock(async () => {
+      await this.roomsRepository.update(roomId, { content });
+    }, 3);
+  }
+
+  /**
+   * 重试执行数据库操作，处理死锁错误
+   * @param operation 要执行的数据库操作
+   * @param maxRetries 最大重试次数
+   * @param delay 重试延迟（毫秒）
+   */
+  private async retryOnDeadlock<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    delay: number = 50
+  ): Promise<T> {
+    let lastError: any;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        
+        // 检查是否是死锁错误
+        const isDeadlock = error.code === 'ER_LOCK_DEADLOCK' || 
+                          error.message?.includes('Deadlock found') ||
+                          error.message?.includes('deadlock');
+        
+        if (isDeadlock && attempt < maxRetries) {
+          this.logger.logWarning(
+            `Deadlock detected, retrying (${attempt}/${maxRetries})...`,
+            { attempt, maxRetries, error: error.message },
+            'RoomsService'
+          );
+          
+          // 指数退避：每次重试延迟时间翻倍
+          const backoffDelay = delay * Math.pow(2, attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, backoffDelay));
+          continue;
+        }
+        
+        // 如果不是死锁或已达到最大重试次数，抛出错误
+        throw error;
+      }
+    }
+    
+    // 理论上不应该到这里，但为了类型安全
+    throw lastError;
   }
 
   async endRoom(roomId: string, userId: string, userRole: UserRole): Promise<Room> {
