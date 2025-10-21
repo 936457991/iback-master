@@ -4,16 +4,19 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { RateLimitGuard } from '../common/guards/rate-limit.guard';
 
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Post('login')
+  @UseGuards(RateLimitGuard) // 🛡️ 添加请求频率限制：30分钟内最多5次登录尝试
   @HttpCode(HttpStatus.OK)
   async login(@Body() loginDto: LoginDto) {
     try {

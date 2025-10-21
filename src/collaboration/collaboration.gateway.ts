@@ -705,6 +705,43 @@ export class CollaborationGateway implements OnGatewayConnection, OnGatewayDisco
     }
   }
 
+  // 🔔 处理气泡提醒
+  @SubscribeMessage('bubble-reminder')
+  async handleBubbleReminder(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { roomId: string; text: string },
+  ) {
+    try {
+      const { roomId, text } = data;
+
+      if (!client.user) {
+        client.emit('error', { message: 'User not authenticated' });
+        return;
+      }
+
+      // 验证用户是否是房间成员
+      const room = await this.roomsService.findOne(roomId);
+      const isMember = room.members.some(member => member.user.id === client.user.id);
+      
+      if (!isMember) {
+        client.emit('error', { message: 'You are not a member of this room' });
+        return;
+      }
+
+      // 广播气泡提醒到房间内的其他用户（不包括发送者）
+      client.to(roomId).emit('bubble-reminder', {
+        text,
+        userId: client.user.id,
+        username: client.user.username,
+      });
+
+      console.log(`🔔 Bubble reminder sent by ${client.user.username} in room ${roomId}: "${text}"`);
+    } catch (error) {
+      console.error('❌ Error handling bubble reminder:', error);
+      client.emit('error', { message: 'Failed to send bubble reminder' });
+    }
+  }
+
   // 通知房间结束
   notifyRoomEnded(roomId: string, endedBy: string) {
     this.server.to(roomId).emit('room-ended', {

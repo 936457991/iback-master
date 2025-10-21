@@ -25,6 +25,32 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let message: string;
     let details: any = null;
 
+    // 🔍 检测是否是客户端中断请求的错误（不需要记录为 ERROR）
+    const isClientAbortError = exception instanceof Error && (
+      exception.message?.includes('request aborted') ||
+      exception.message?.includes('aborted') ||
+      exception.message?.includes('Client closed') ||
+      exception.message?.includes('socket hang up') ||
+      exception.message?.includes('ECONNRESET') ||
+      (exception as any).code === 'ECONNRESET'
+    );
+
+    // 如果是客户端中断错误，降级为 DEBUG 级别，不发送响应
+    if (isClientAbortError) {
+      this.logger.logDebug(
+        `Client aborted request: ${exception.message}`,
+        {
+          url: request.url,
+          method: request.method,
+          userAgent: request.get('User-Agent'),
+          ip: request.ip,
+        },
+        'GlobalExceptionFilter'
+      );
+      // 不尝试发送响应，因为连接已经断开
+      return;
+    }
+
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exceptionResponse = exception.getResponse();
