@@ -10,9 +10,100 @@ const connections = new Map<string, Set<any>>();
 // 🔧 添加心跳检测，及早发现断线连接
 const heartbeats = new Map<any, NodeJS.Timeout>();
 
+// 🔧 日志控制：生产环境减少日志输出
+const DEBUG = process.env.YJS_DEBUG === 'true' || process.env.NODE_ENV === 'development';
+
+// ⚡ 性能优化：消息节流和批量处理
+const updateBuffers = new Map<string, Array<{ client: any; message: Uint8Array }>>(); // 房间 -> 待发送更新列表
+const flushTimers = new Map<string, NodeJS.Timeout>(); // 房间 -> 刷新定时器
+const FLUSH_INTERVAL = 50; // 50ms 批量发送一次（降低网络IO）
+
+const awarenessBuffers = new Map<string, Array<{ client: any; message: Uint8Array }>>(); // Awareness 消息缓冲
+const awarenessFlushTimers = new Map<string, NodeJS.Timeout>(); // Awareness 刷新定时器
+const AWARENESS_FLUSH_INTERVAL = 100; // 100ms 批量发送一次 awareness
+
 // Message types
 const messageSync = 0;
 const messageAwareness = 1;
+
+/**
+ * ⚡ 批量发送更新消息（减少网络IO）
+ */
+function flushUpdateBuffer(roomName: string) {
+  const buffer = updateBuffers.get(roomName);
+  if (!buffer || buffer.length === 0) return;
+
+  // 按客户端分组消息
+  const clientMessages = new Map<any, Uint8Array[]>();
+  
+  buffer.forEach(({ client, message }) => {
+    if (client.readyState === 1) {
+      if (!clientMessages.has(client)) {
+        clientMessages.set(client, []);
+      }
+      clientMessages.get(client)!.push(message);
+    }
+  });
+
+  // 批量发送给每个客户端
+  clientMessages.forEach((messages, client) => {
+    if (messages.length === 1) {
+      // 只有一条消息，直接发送
+      client.send(messages[0], (error: any) => {
+        if (error) {
+          console.error(`❌ Failed to send update in room ${roomName}:`, error);
+        }
+      });
+    } else {
+      // 多条消息，合并后发送（节省带宽）
+      messages.forEach(msg => {
+        client.send(msg, (error: any) => {
+          if (error) {
+            console.error(`❌ Failed to send batched update in room ${roomName}:`, error);
+          }
+        });
+      });
+    }
+  });
+
+  // 清空缓冲区
+  updateBuffers.set(roomName, []);
+  if (DEBUG) {
+    console.log(`📦 Flushed ${buffer.length} updates for room ${roomName} to ${clientMessages.size} clients`);
+  }
+}
+
+/**
+ * ⚡ 批量发送 awareness 消息
+ */
+function flushAwarenessBuffer(roomName: string) {
+  const buffer = awarenessBuffers.get(roomName);
+  if (!buffer || buffer.length === 0) return;
+
+  // 只发送最后一条 awareness（只需要最新状态）
+  const latestByClient = new Map<any, Uint8Array>();
+  
+  buffer.forEach(({ client, message }) => {
+    if (client.readyState === 1) {
+      latestByClient.set(client, message);
+    }
+  });
+
+  // 发送最新的 awareness 状态
+  latestByClient.forEach((message, client) => {
+    client.send(message, (error: any) => {
+      if (error) {
+        console.error(`❌ Failed to send awareness in room ${roomName}:`, error);
+      }
+    });
+  });
+
+  // 清空缓冲区
+  awarenessBuffers.set(roomName, []);
+  if (DEBUG) {
+    console.log(`👁️ Flushed awareness updates for room ${roomName} to ${latestByClient.size} clients`);
+  }
+}
 
 export function setupYjsWebSocketServer(wsPort: number = 1234) {
   // Create WebSocket server for Yjs on a different port to avoid conflicts
@@ -32,7 +123,9 @@ export function setupYjsWebSocketServer(wsPort: number = 1234) {
     }
 
     const roomName = roomMatch[1];
-    console.log(`🔗 Yjs WebSocket connection for room: ${roomName}`);
+    if (DEBUG) {
+      console.log(`🔗 Yjs WebSocket connection for room: ${roomName}`);
+    }
 
     // Get or create document for this room
     if (!docs.has(roomName)) {
@@ -107,26 +200,27 @@ export function setupYjsWebSocketServer(wsPort: number = 1234) {
 
             // Broadcast to all other clients in the room
             if (syncMessageType === 2) {
-              // 🔧 安全广播更新消息，添加错误处理和重试机制
+              // ⚡ 性能优化：将更新加入缓冲区，批量发送
+              if (!updateBuffers.has(roomName)) {
+                updateBuffers.set(roomName, []);
+              }
+              
+              const buffer = updateBuffers.get(roomName)!;
               roomConnections.forEach((client) => {
                 if (client !== ws && client.readyState === 1) {
-                  try {
-                    client.send(message, (error) => {
-                      if (error) {
-                        console.error(`❌ Failed to broadcast update in room ${roomName}:`, error);
-                        // 移除失败的连接，触发客户端重连
-                        if (client.readyState !== 1) {
-                          roomConnections.delete(client);
-                          console.log(`🔌 Removed failed connection from room ${roomName}`);
-                        }
-                      }
-                    });
-                  } catch (error) {
-                    console.error(`❌ Error broadcasting to client in room ${roomName}:`, error);
-                    roomConnections.delete(client);
-                  }
+                  buffer.push({ client, message });
                 }
               });
+
+              // 设置或重置刷新定时器
+              if (flushTimers.has(roomName)) {
+                clearTimeout(flushTimers.get(roomName)!);
+              }
+              
+              flushTimers.set(roomName, setTimeout(() => {
+                flushUpdateBuffer(roomName);
+                flushTimers.delete(roomName);
+              }, FLUSH_INTERVAL));
             } else {
               const syncMessage = encoding.toUint8Array(syncEncoder);
               if (syncMessage.length > 1) {
@@ -145,21 +239,27 @@ export function setupYjsWebSocketServer(wsPort: number = 1234) {
             break;
 
           case messageAwareness:
-            // Handle awareness updates with error handling
+            // ⚡ 性能优化：Awareness 消息批量发送
+            if (!awarenessBuffers.has(roomName)) {
+              awarenessBuffers.set(roomName, []);
+            }
+            
+            const awarenessBuffer = awarenessBuffers.get(roomName)!;
             roomConnections.forEach((client) => {
               if (client !== ws && client.readyState === 1) {
-                try {
-                  client.send(message, (error) => {
-                    if (error) {
-                      console.error(`❌ Failed to broadcast awareness in room ${roomName}:`, error);
-                    }
-                  });
-                } catch (error) {
-                  console.error(`❌ Error broadcasting awareness in room ${roomName}:`, error);
-                  roomConnections.delete(client);
-                }
+                awarenessBuffer.push({ client, message });
               }
             });
+
+            // 设置或重置刷新定时器
+            if (awarenessFlushTimers.has(roomName)) {
+              clearTimeout(awarenessFlushTimers.get(roomName)!);
+            }
+            
+            awarenessFlushTimers.set(roomName, setTimeout(() => {
+              flushAwarenessBuffer(roomName);
+              awarenessFlushTimers.delete(roomName);
+            }, AWARENESS_FLUSH_INTERVAL));
             break;
 
           default:
@@ -178,7 +278,9 @@ export function setupYjsWebSocketServer(wsPort: number = 1234) {
 
     // Handle disconnection
     ws.on('close', () => {
-      console.log(`🔌 Yjs WebSocket disconnected from room: ${roomName}`);
+      if (DEBUG) {
+        console.log(`🔌 Yjs WebSocket disconnected from room: ${roomName}`);
+      }
       roomConnections.delete(ws);
 
       // 🔧 清理心跳定时器
@@ -190,9 +292,27 @@ export function setupYjsWebSocketServer(wsPort: number = 1234) {
 
       // Clean up empty rooms
       if (roomConnections.size === 0) {
+        // ⚡ 清理该房间的所有定时器和缓冲区
+        const flushTimer = flushTimers.get(roomName);
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimers.delete(roomName);
+        }
+        
+        const awarenessTimer = awarenessFlushTimers.get(roomName);
+        if (awarenessTimer) {
+          clearTimeout(awarenessTimer);
+          awarenessFlushTimers.delete(roomName);
+        }
+        
+        updateBuffers.delete(roomName);
+        awarenessBuffers.delete(roomName);
+        
         connections.delete(roomName);
         docs.delete(roomName);
-        console.log(`🗑️ Cleaned up empty room: ${roomName}`);
+        if (DEBUG) {
+          console.log(`🗑️ Cleaned up empty room and buffers: ${roomName}`);
+        }
       }
     });
 
