@@ -42,6 +42,14 @@ export class Room {
   @Column({ default: 'javascript' })
   language: string;
 
+  // 外部共享代码链接（可选）。存在时，前端可用该链接作为“代码界面”。
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  coderpadUrl?: string;
+
+  // CoderPad 链接有效期截止时间（仅当 coderpadUrl 为 CoderPad 链接时生效）
+  @Column({ type: 'datetime', nullable: true })
+  coderpadExpiresAt?: Date;
+
   @CreateDateColumn()
   createdAt: Date;
 
