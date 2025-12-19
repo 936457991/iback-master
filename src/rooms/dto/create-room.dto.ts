@@ -33,4 +33,13 @@ export class CreateRoomDto {
   @IsOptional()
   @IsDateString()
   coderpadExpiresAt?: string | null;
+
+  // 系统设计链接（可选）
+  @IsOptional()
+  @MaxLength(2048)
+  @IsUrl(
+    { require_protocol: true },
+    { message: 'systemDesignUrl must be a valid URL with protocol (e.g. https://...)' },
+  )
+  systemDesignUrl?: string | null;
 }

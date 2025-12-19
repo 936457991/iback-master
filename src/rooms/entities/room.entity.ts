@@ -50,6 +50,10 @@ export class Room {
   @Column({ type: 'datetime', nullable: true })
   coderpadExpiresAt?: Date;
 
+  // 系统设计链接（可选）。存在时，进入房间后可切换到系统设计视图。
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  systemDesignUrl?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

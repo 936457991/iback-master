@@ -94,11 +94,11 @@ export class RoomsService {
   async create(createRoomDto: CreateRoomDto, creatorId: string): Promise<Room> {
     const roomCode = await this.generateRoomCode();
 
-    // 如果有密码，进行加密
-    let hashedPassword: string | undefined = undefined;
-    if (createRoomDto.password) {
-      hashedPassword = await bcrypt.hash(createRoomDto.password, 10);
-    }
+    // 🔧 Password temporarily disabled: ignore password on create
+    // let hashedPassword: string | undefined = undefined;
+    // if (createRoomDto.password) {
+    //   hashedPassword = await bcrypt.hash(createRoomDto.password, 10);
+    // }
 
     const { coderpadExpiresAt: expiresAtRaw, ...rest } = createRoomDto;
     const coderpadExpiresAt = this.computeCoderpadExpiresAt(rest.coderpadUrl, expiresAtRaw);
@@ -106,7 +106,8 @@ export class RoomsService {
     const room = this.roomsRepository.create({
       ...(rest as DeepPartial<Room>),
       roomCode,
-      password: hashedPassword,
+      // 🔧 Password temporarily disabled
+      password: null as any,
       coderpadExpiresAt,
     } as DeepPartial<Room>);
     const savedRoom = await this.roomsRepository.save(room);
@@ -186,11 +187,11 @@ export class RoomsService {
         'room.name', 
         'room.description',
         'room.roomCode',
-        'room.password',
         'room.status',
         'room.language',
         'room.coderpadUrl',
         'room.coderpadExpiresAt',
+        'room.systemDesignUrl',
         'room.createdAt',
         'room.updatedAt',
         'member.id',
@@ -278,11 +279,11 @@ export class RoomsService {
       name: true,
       description: true,
       roomCode: true,
-      password: true,
       status: true,
       language: true,
       coderpadUrl: true,
       coderpadExpiresAt: true,
+      systemDesignUrl: true,
       createdAt: true,
       updatedAt: true,
       members: {
@@ -339,11 +340,11 @@ export class RoomsService {
       name: true,
       description: true,
       roomCode: true,
-      password: true,
       status: true,
       language: true,
       coderpadUrl: true,
       coderpadExpiresAt: true,
+      systemDesignUrl: true,
       createdAt: true,
       updatedAt: true,
       members: {
@@ -410,11 +411,11 @@ export class RoomsService {
           name: true,
           description: true,
           roomCode: true,
-          password: true,
           status: true,
           language: true,
           coderpadUrl: true,
           coderpadExpiresAt: true,
+          systemDesignUrl: true,
           createdAt: true,
           updatedAt: true,
           members: {
@@ -470,11 +471,11 @@ export class RoomsService {
           name: true,
           description: true,
           roomCode: true,
-          password: true,
           status: true,
           language: true,
           coderpadUrl: true,
           coderpadExpiresAt: true,
+          systemDesignUrl: true,
           createdAt: true,
           updatedAt: true,
           members: {
@@ -545,11 +546,11 @@ export class RoomsService {
           name: true,
           description: true,
           roomCode: true,
-          password: true,
           status: true,
           language: true,
           coderpadUrl: true,
           coderpadExpiresAt: true,
+          systemDesignUrl: true,
           createdAt: true,
           updatedAt: true,
           members: {
@@ -610,11 +611,13 @@ export class RoomsService {
     const isEditingRoomInfo =
       updateRoomDto.name !== undefined ||
       updateRoomDto.description !== undefined ||
-      updateRoomDto.password !== undefined ||
+      // 🔧 Password temporarily disabled
+      // updateRoomDto.password !== undefined ||
       updateRoomDto.status !== undefined ||
       updateRoomDto.language !== undefined ||
       (updateRoomDto as any).coderpadUrl !== undefined ||
-      (updateRoomDto as any).coderpadExpiresAt !== undefined;
+      (updateRoomDto as any).coderpadExpiresAt !== undefined ||
+      (updateRoomDto as any).systemDesignUrl !== undefined;
 
     if (isEditingRoomInfo && !isRoomAdmin && !isGlobalAdmin) {
       throw new ForbiddenException('Only the room creator or an admin can edit room settings');
@@ -641,7 +644,7 @@ export class RoomsService {
     // 使用重试机制处理可能的死锁（同时避免 save(room) 携带 relations 导致慢/超时）
     await this.retryOnDeadlock(async () => {
       const dtoAny = updateRoomDto as any;
-      const { coderpadExpiresAt: expiresAtRaw, ...rest } = dtoAny;
+      const { coderpadExpiresAt: expiresAtRaw, systemDesignUrl: systemDesignUrlRaw, ...rest } = dtoAny;
 
       const updatePatch: DeepPartial<Room> = {};
 
@@ -653,13 +656,14 @@ export class RoomsService {
       if (rest.content !== undefined) updatePatch.content = rest.content;
 
       // 密码更新：传空字符串/空值 => 清空；传值 => hash
-      if (rest.password !== undefined) {
-        if (!rest.password) {
-          updatePatch.password = null as any;
-        } else {
-          updatePatch.password = await bcrypt.hash(String(rest.password), 10);
-        }
-      }
+      // 🔧 Password temporarily disabled
+      // if (rest.password !== undefined) {
+      //   if (!rest.password) {
+      //     updatePatch.password = null as any;
+      //   } else {
+      //     updatePatch.password = await bcrypt.hash(String(rest.password), 10);
+      //   }
+      // }
 
       const coderpadUrlProvided = Object.prototype.hasOwnProperty.call(dtoAny, 'coderpadUrl');
       const coderpadExpiresAtProvided = Object.prototype.hasOwnProperty.call(dtoAny, 'coderpadExpiresAt');
@@ -680,6 +684,13 @@ export class RoomsService {
         if (coderpadUrlProvided || coderpadExpiresAtProvided) {
           updatePatch.coderpadExpiresAt = this.computeCoderpadExpiresAt(nextUrl, expiresAtRaw) as any;
         }
+      }
+
+      // 系统设计链接：允许显式传 null/空串清空；未提供则保持原值
+      const systemDesignUrlProvided = Object.prototype.hasOwnProperty.call(dtoAny, 'systemDesignUrl');
+      if (systemDesignUrlProvided) {
+        const nextSystemDesignUrl = systemDesignUrlRaw ? String(systemDesignUrlRaw).trim() : systemDesignUrlRaw;
+        updatePatch.systemDesignUrl = nextSystemDesignUrl ? (nextSystemDesignUrl as any) : (null as any);
       }
 
       // 没有任何字段要更新则直接返回
@@ -746,10 +757,7 @@ export class RoomsService {
     const { roomId, role = RoomMemberRole.MEMBER } = joinRoomDto;
 
     const room = await this.findOne(roomId, false);
-
-    if (this.isLinkExpired(room)) {
-      throw new ForbiddenException('Code link expired. Please update the link before entering.');
-    }
+    // 链接失效仅针对“代码链接”视图：不再在进入房间前拦截
 
     // Check if user is already a member
     const existingMember = await this.roomMembersRepository.findOne({
@@ -787,30 +795,28 @@ export class RoomsService {
   }
 
   async joinRoomByCode(joinRoomByCodeDto: JoinRoomByCodeDto, userId: string): Promise<RoomMember> {
-    const { roomCode, password, role = RoomMemberRole.MEMBER } = joinRoomByCodeDto;
+    const { roomCode, role = RoomMemberRole.MEMBER } = joinRoomByCodeDto;
 
     const room = await this.findByRoomCode(roomCode, false);
-
-    if (this.isLinkExpired(room)) {
-      throw new ForbiddenException('Code link expired. Please update the link before entering.');
-    }
+    // 链接失效仅针对“代码链接”视图：不再在进入房间前拦截
 
     // 检查房间状态
     if (room.status === RoomStatus.ENDED) {
       throw new BadRequestException('This room has ended and cannot be joined');
     }
 
-    // 检查密码
-    if (room.password) {
-      if (!password) {
-        throw new BadRequestException('This room requires a password');
-      }
-
-      const isPasswordValid = await bcrypt.compare(password, room.password);
-      if (!isPasswordValid) {
-        throw new BadRequestException('Invalid password');
-      }
-    }
+    // 🔧 Password temporarily disabled
+    // // 检查密码
+    // if (room.password) {
+    //   if (!password) {
+    //     throw new BadRequestException('This room requires a password');
+    //   }
+    //
+    //   const isPasswordValid = await bcrypt.compare(password, room.password);
+    //   if (!isPasswordValid) {
+    //     throw new BadRequestException('Invalid password');
+    //   }
+    // }
 
     // Check if user is already a member
     const existingMember = await this.roomMembersRepository.findOne({
